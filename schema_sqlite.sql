@@ -215,6 +215,8 @@ END;
 -- Sample Data
 INSERT INTO customers(name,email) VALUES('Rafi','rafi@email.com');
 INSERT INTO customers(name,email) VALUES('Siyam','siyam@example.com');
+INSERT INTO customers(name,email) VALUES('sanim','sanim@example.com');
+INSERT INTO customers(name,email) VALUES('shakib','shakib@example.com');
 
 INSERT INTO products(name,price) VALUES('Laptop',1000);
 INSERT INTO products(name,price) VALUES('Tablet',500);
