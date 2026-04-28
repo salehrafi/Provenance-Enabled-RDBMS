@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS products (
   product_id  INTEGER PRIMARY KEY AUTOINCREMENT,
   name        TEXT NOT NULL,
   price       REAL NOT NULL CHECK (price >= 0),
-  active_flag TEXT DEFAULT 'Y' CHECK (active_flag IN ('Y','N')),
+  active_flag TEXT DEFAULT 'Yes' CHECK (active_flag IN ('Yes','No')),
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -224,7 +224,7 @@ INSERT INTO products(name,price) VALUES('Headphones',150);
 INSERT INTO products(name,price) VALUES('Buds',250);
 
 UPDATE products SET price=1099.99 WHERE name='Laptop';
-UPDATE products SET active_flag='N' WHERE name='Tablet';
+UPDATE products SET active_flag='No' WHERE name='Tablet';
 
 INSERT INTO orders(customer_id,status) VALUES(1,'CREATED');
 INSERT INTO order_items(order_id,product_id,quantity,unit_price) VALUES(1,1,1,1099.99);

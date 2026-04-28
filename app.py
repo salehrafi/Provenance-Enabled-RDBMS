@@ -76,7 +76,8 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Provenance DB Explorer</title>
+<title>Provenance DB || CSE 464</title>
+<link rel="icon" href="https://ewubd.edu/themes/east-west-university/assets/default/images/favicon.png">
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:Arial,sans-serif;background:#f0f4f8;color:#222}
