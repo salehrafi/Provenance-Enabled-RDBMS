@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
-from app.common import not_found
-from app.db import Db
-from app.deps import CurrentUser, admin, get_db, viewer
-from app.schemas import SettingsUpdate, UserCreate, UserUpdate
+from app.auth import ALL_PERMISSIONS, ROLE_PERMISSIONS, Ctx, require, require_user
+from app.errors import ApiError, not_found
+from app.schemas import OrganizationUpdate, SettingsUpdate, UserCreate, UserUpdate
 from app.security import hash_password
 
 router = APIRouter(tags=["organization"])
@@ -13,61 +12,77 @@ router = APIRouter(tags=["organization"])
 _COLS = "user_id, email, full_name, role, is_active, created_at, last_login_at"
 
 
+@router.get("/roles", summary="Roles and the permissions each one grants")
+def list_roles(ctx: Ctx = Depends(require("settings:read"))):
+    order = ["viewer", "auditor", "staff", "admin"]
+    return {"items": [{"role": r, "permissions": sorted(ROLE_PERMISSIONS[r])} for r in order],
+            "permissions": sorted(ALL_PERMISSIONS)}
+
+
 @router.get("/users", summary="List users in your organization")
-def list_users(user: CurrentUser = Depends(admin), db: Db = Depends(get_db)):
-    # app_users is not VPD-protected (login must find users across tenants), so filter here.
-    return db.all(f"SELECT {_COLS} FROM app_users WHERE tenant_id = :t ORDER BY user_id", {"t": user.tenant_id})
+def list_users(ctx: Ctx = Depends(require("users:manage"))):
+    return {"items": ctx.db.all(f"SELECT {_COLS} FROM users ORDER BY user_id")}
 
 
-@router.post("/users", status_code=status.HTTP_201_CREATED, summary="Invite a user")
-def create_user(body: UserCreate, user: CurrentUser = Depends(admin), db: Db = Depends(get_db)):
-    email = body.email.lower()
-    if db.scalar("SELECT COUNT(*) FROM app_users WHERE email = :e", {"e": email}):
-        raise HTTPException(status.HTTP_409_CONFLICT, "An account with this email already exists")
-    new_id = db.insert(
-        "INSERT INTO app_users (tenant_id, email, full_name, password_hash, role) VALUES (:t, :e, :n, :h, :r)",
-        {"t": user.tenant_id, "e": email, "n": body.full_name, "h": hash_password(body.password), "r": body.role},
-        "user_id",
-    )
-    db.commit()
-    return db.one(f"SELECT {_COLS} FROM app_users WHERE user_id = :id", {"id": new_id})
+@router.post("/users", status_code=201, summary="Add a user to your organization")
+def create_user(body: UserCreate, ctx: Ctx = Depends(require_user("users:manage"))):
+    # A duplicate email (in any organization) violates uq_users_email -> 409 EMAIL_TAKEN.
+    new_id = ctx.db.insert(
+        "INSERT INTO users (email, full_name, password_hash, role) VALUES (%s, %s, %s, %s)",
+        (body.email.lower(), body.full_name, hash_password(body.password), body.role), "user_id")
+    ctx.db.commit()
+    return ctx.db.one(f"SELECT {_COLS} FROM users WHERE user_id = %s", (new_id,))
 
 
 @router.patch("/users/{user_id}", summary="Change a user's role, name or status")
-def update_user(user_id: int, body: UserUpdate, user: CurrentUser = Depends(admin), db: Db = Depends(get_db)):
-    target = db.one(f"SELECT {_COLS} FROM app_users WHERE user_id = :id AND tenant_id = :t",
-                    {"id": user_id, "t": user.tenant_id})
+def update_user(user_id: int, body: UserUpdate, ctx: Ctx = Depends(require_user("users:manage"))):
+    db = ctx.db
+    target = db.one(f"SELECT {_COLS} FROM users WHERE user_id = %s FOR UPDATE", (user_id,))
     if not target:
         raise not_found("User")
-    if user_id == user.user_id and (body.is_active is False or (body.role and body.role != "admin")):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot demote or deactivate yourself")
-    params = {"id": user_id}
-    sets = []
+    if user_id == ctx.principal.user_id and (body.is_active is False or (body.role and body.role != "admin")):
+        raise ApiError(400, "You cannot demote or deactivate yourself", "SELF_LOCKOUT")
+    sets: list[str] = []
+    params: list[object] = []
     if body.full_name is not None:
-        sets.append("full_name = :n")
-        params["n"] = body.full_name
+        sets.append("full_name = %s")
+        params.append(body.full_name)
     if body.role is not None:
-        sets.append("role = :r")
-        params["r"] = body.role
+        sets.append("role = %s")
+        params.append(body.role)
     if body.is_active is not None:
-        sets.append("is_active = :a")
-        params["a"] = "Y" if body.is_active else "N"
+        sets.append("is_active = %s")
+        params.append(body.is_active)
     if sets:
-        db.execute(f"UPDATE app_users SET {', '.join(sets)} WHERE user_id = :id", params)
-        db.commit()
-    return db.one(f"SELECT {_COLS} FROM app_users WHERE user_id = :id", {"id": user_id})
+        db.execute(f"UPDATE users SET {', '.join(sets)} WHERE user_id = %s", (*params, user_id))
+        if body.is_active is False:
+            # Cut existing sessions immediately rather than waiting for token expiry.
+            db.execute("UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = %s AND revoked_at IS NULL",
+                       (user_id,))
+            db.execute("UPDATE users SET token_version = token_version + 1 WHERE user_id = %s", (user_id,))
+        db.commit()  # the "keep one active admin" constraint is checked here (409 LAST_ADMIN)
+    return db.one(f"SELECT {_COLS} FROM users WHERE user_id = %s", (user_id,))
+
+
+@router.patch("/organization", summary="Rename your organization")
+def update_organization(body: OrganizationUpdate, ctx: Ctx = Depends(require_user("settings:manage"))):
+    ctx.db.execute("UPDATE tenants SET name = %s WHERE tenant_id = %s", (body.name, ctx.tenant_id))
+    ctx.db.commit()
+    return ctx.db.one("SELECT tenant_id, name, slug, plan, created_at FROM tenants")
 
 
 @router.get("/settings", summary="Organization settings (thresholds for approvals and alerts)")
-def get_settings_(user: CurrentUser = Depends(viewer), db: Db = Depends(get_db)):
-    return db.one("SELECT * FROM tenant_settings")
+def get_settings_(ctx: Ctx = Depends(require("settings:read"))):
+    return ctx.db.one("SELECT * FROM tenant_settings")
 
 
 @router.patch("/settings", summary="Update organization settings")
-def update_settings(body: SettingsUpdate, user: CurrentUser = Depends(admin), db: Db = Depends(get_db)):
+def update_settings(body: SettingsUpdate, ctx: Ctx = Depends(require_user("settings:manage"))):
     fields = body.model_dump(exclude_none=True)
     if fields:
-        sets = ", ".join(f"{k} = :{k}" for k in fields)  # keys come from the Pydantic model, not the client
-        db.execute(f"UPDATE tenant_settings SET {sets}", fields)
-        db.commit()
-    return db.one("SELECT * FROM tenant_settings")
+        # Column names come from the Pydantic model's field names, never from the client.
+        sets = ", ".join(f"{k} = %({k})s" for k in fields)
+        ctx.db.execute(f"UPDATE tenant_settings SET {sets} WHERE tenant_id = %(_tenant)s",
+                       {**fields, "_tenant": ctx.tenant_id})
+        ctx.db.commit()
+    return ctx.db.one("SELECT * FROM tenant_settings")

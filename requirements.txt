@@ -1,13 +1,15 @@
-fastapi>=0.115
-uvicorn[standard]>=0.30
-oracledb>=2.4
-pydantic>=2.8
-pydantic-settings>=2.4
-email-validator>=2.2
-PyJWT>=2.9
+# Runtime dependencies. Upper bounds stop a surprise major upgrade; `pip-audit` runs in CI.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+psycopg[binary,pool]>=3.2,<4
+alembic>=1.13,<2
+SQLAlchemy>=2.0,<3            # used by Alembic only; the app talks to PostgreSQL through psycopg
+pydantic>=2.8,<3
+pydantic-settings>=2.4,<3
+email-validator>=2.2,<3
+PyJWT>=2.9,<3
 argon2-cffi>=23.1
-httpx>=0.27
+cryptography>=43
+httpx>=0.27,<1
 python-multipart>=0.0.9
-redis>=5.0
-pytest>=8.3
-fakeredis>=2.20
+redis>=5.0,<7

@@ -1,6 +1,17 @@
 .env
+.env.*
+!.env.example
+!.env.docker.example
 .venv/
+.pgdata/
 __pycache__/
 *.pyc
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.log
+backups/
+node_modules/
+*.egg-info/
+.claude/
+.github/

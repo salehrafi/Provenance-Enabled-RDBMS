@@ -1,13 +1,12 @@
+"""Small helpers shared by routers and services."""
+
 from __future__ import annotations
 
-import json
-from datetime import date, datetime
-from decimal import Decimal
 from typing import Any
 
-from fastapi import HTTPException, status
+from app.db import Db, Row, dumps, json_default, jsonb
 
-from app.db import Db, parse_json
+__all__ = ["AUDIT_COLS", "audit_entry", "diff_values", "dumps", "emit_event", "json_default", "page", "update_set"]
 
 AUDIT_COLS = (
     "audit_id, chain_seq, entity, record_pk, operation, old_values, new_values, actor, actor_user_id, "
@@ -15,28 +14,12 @@ AUDIT_COLS = (
 )
 
 
-def not_found(what: str) -> HTTPException:
-    return HTTPException(status.HTTP_404_NOT_FOUND, f"{what} not found")
-
-
-def paginate(rows: list[dict[str, Any]], limit: int, offset: int) -> dict[str, Any]:
-    """Rows must include a COUNT(*) OVER () AS total_count column."""
+def page(rows: list[Row], limit: int, offset: int) -> dict[str, Any]:
+    """Offset page. Rows must carry a `count(*) OVER () AS total_count` column."""
     total = int(rows[0]["total_count"]) if rows else 0
     for r in rows:
         r.pop("total_count", None)
     return {"items": rows, "total": total, "limit": limit, "offset": offset}
-
-
-def json_default(o: Any) -> Any:
-    if isinstance(o, Decimal):
-        return int(o) if o == o.to_integral_value() else float(o)
-    if isinstance(o, (datetime, date)):
-        return o.isoformat()
-    raise TypeError(f"not JSON serialisable: {type(o)}")
-
-
-def dumps(value: Any) -> str:
-    return json.dumps(value, default=json_default, separators=(",", ":"))
 
 
 def diff_values(old: dict | None, new: dict | None) -> list[dict[str, Any]]:
@@ -45,22 +28,23 @@ def diff_values(old: dict | None, new: dict | None) -> list[dict[str, Any]]:
     return [{"field": k, "old": old.get(k), "new": new.get(k)} for k in keys if old.get(k) != new.get(k)]
 
 
-def audit_entry(row: dict[str, Any]) -> dict[str, Any]:
-    old = parse_json(row.pop("old_values", None))
-    new = parse_json(row.pop("new_values", None))
-    return {**row, "old_values": old, "new_values": new, "changes": diff_values(old, new)}
+def audit_entry(row: Row) -> Row:
+    return {**row, "changes": diff_values(row.get("old_values"), row.get("new_values"))}
 
 
-def emit_event(db: Db, tenant_id: int, event_type: str, entity: str, entity_id: Any, payload: dict) -> None:
+def emit_event(db: Db, event_type: str, entity: str, entity_id: Any, payload: dict) -> None:
     """Write to the transactional outbox; published only if the surrounding transaction commits."""
-    db.callproc("outbox_pkg.emit", [tenant_id, event_type, entity, str(entity_id), dumps(payload)])
+    db.execute(
+        "INSERT INTO outbox_events (event_type, entity, entity_id, payload, request_id) VALUES (%s, %s, %s, %s, %s)",
+        (event_type, entity, str(entity_id), jsonb(payload), db.ctx.request_id),
+    )
 
 
 def update_set(fields: dict[str, Any], allowed: dict[str, str]) -> tuple[str, dict[str, Any]]:
-    """Build a safe SET clause from whitelisted fields. allowed maps field -> column."""
+    """Build a SET clause from allow-listed fields only. `allowed` maps field name -> column name."""
     parts, params = [], {}
     for key, value in fields.items():
         if key in allowed:
-            parts.append(f"{allowed[key]} = :{key}")
+            parts.append(f"{allowed[key]} = %({key})s")
             params[key] = value
     return ", ".join(parts), params

@@ -1,0 +1,66 @@
+# Local and single-host deployment. Copy .env.docker.example to .env.docker and fill in the secrets:
+#   docker compose --env-file .env.docker up --build
+# Services: postgres (data), setup (one-shot roles + migrations), api (N replicas), worker (outbox, rules, checkpoints).
+name: provenance
+x-app: &app
+  build: .
+  env_file: .env.docker
+  environment:
+    DATABASE_URL: postgresql://prov_app:${APP_DB_PASSWORD}@postgres:5432/provenance
+    DATABASE_OWNER_URL: postgresql://prov_owner:${OWNER_DB_PASSWORD}@postgres:5432/provenance
+    DATABASE_ADMIN_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+    DATABASE_PLATFORM_URL: postgresql://prov_platform:${PLATFORM_DB_PASSWORD}@postgres:5432/provenance
+    PLATFORM_ANCHOR_PATH: /anchor/platform-checkpoints.jsonl
+    REDIS_URL: redis://redis:6379/0
+    CHECKPOINT_ANCHOR_PATH: /anchor/checkpoints.jsonl
+  depends_on:
+    postgres: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 5s, timeout: 3s, retries: 20 }
+    # Not published to the host. Add `ports: ["127.0.0.1:5432:5432"]` only if you need psql from the host.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]   # rate-limit counters only; nothing to persist
+  setup:
+    <<: *app
+    command: ["python", "-m", "app.cli", "setup"]
+    restart: "no"
+  api:
+    <<: *app
+    ports: ["8000:8000"]
+    depends_on:
+      setup: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+    environment:
+      WORKERS_ENABLED: "false"
+      DATABASE_URL: postgresql://prov_app:${APP_DB_PASSWORD}@postgres:5432/provenance
+      DATABASE_OWNER_URL: ""          # the running API never needs the owner role
+      DATABASE_PLATFORM_URL: postgresql://prov_platform:${PLATFORM_DB_PASSWORD}@postgres:5432/provenance
+      DATABASE_ADMIN_URL: ""
+      REDIS_URL: redis://redis:6379/0
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      setup: { condition: service_completed_successfully }
+    environment:
+      DATABASE_URL: postgresql://prov_app:${APP_DB_PASSWORD}@postgres:5432/provenance
+      DATABASE_OWNER_URL: ""
+      DATABASE_ADMIN_URL: ""
+      CHECKPOINT_ANCHOR_PATH: /anchor/checkpoints.jsonl
+      DATABASE_PLATFORM_URL: postgresql://prov_platform:${PLATFORM_DB_PASSWORD}@postgres:5432/provenance
+      PLATFORM_ANCHOR_PATH: /anchor/platform-checkpoints.jsonl   # mount write-once storage here in production
+    volumes: [anchor:/anchor]
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  pgdata:
+  anchor:

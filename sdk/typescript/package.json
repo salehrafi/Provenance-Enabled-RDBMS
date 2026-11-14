@@ -1,0 +1,10 @@
+{
+  "name": "@provenance-cloud/client",
+  "version": "0.1.0",
+  "description": "TypeScript client for Provenance Cloud",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}

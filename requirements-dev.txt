@@ -1,0 +1,8 @@
+-r requirements.txt
+pytest>=8.3
+fakeredis>=2.20
+ruff>=0.6
+mypy>=1.11
+pip-audit>=2.7
+# Optional: a PostgreSQL 16 binary for machines without Docker (see scripts/dev_postgres.py).
+pgserver>=0.1.4; python_version < "3.13"

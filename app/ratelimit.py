@@ -14,9 +14,10 @@ import uuid
 from collections import defaultdict, deque
 from typing import Any
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request
 
 from app.config import get_settings
+from app.errors import ApiError
 
 log = logging.getLogger("app.ratelimit")
 
@@ -47,9 +48,8 @@ def _redis() -> Any:
 
 
 def _too_many(limit: int, retry: int) -> HTTPException:
-    return HTTPException(
-        status.HTTP_429_TOO_MANY_REQUESTS,
-        "Too many requests, try again later",
+    return ApiError(
+        429, "Too many requests, try again later", "RATE_LIMITED",
         headers={"Retry-After": str(max(retry, 1)), "RateLimit-Limit": str(limit), "RateLimit-Remaining": "0"},
     )
 
@@ -101,10 +101,16 @@ def hit(key: str, limit: int, window: float = 60.0) -> int:
     return _hit_memory(key, limit, window)
 
 
+def client_ip(request: Request) -> str:
+    """The peer address. Behind a reverse proxy, run uvicorn with --proxy-headers and
+    --forwarded-allow-ips so this is the real client and not the proxy."""
+    return request.client.host if request.client else "unknown"
+
+
 def rate_limit(request: Request, bucket: str, limit: int | None = None, window: float = 60.0) -> None:
+    """Per-client-address limit, for unauthenticated endpoints."""
     limit = limit or get_settings().login_rate_limit_per_minute
-    client = request.client.host if request.client else "unknown"
-    hit(f"{bucket}:{client}", limit, window)
+    hit(f"{bucket}:{client_ip(request)}", limit, window)
 
 
 def reset() -> None:

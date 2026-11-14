@@ -1,0 +1,11 @@
+.git
+.venv
+.pgdata
+.env
+.env.*
+**/__pycache__
+tests
+legacy
+docs
+*.pdf
+.claude
